@@ -1,0 +1,11 @@
+# ignores node_modules anywhere in the project
+**/node_modules
+
+# environment variables
+**/.env
+
+# build output
+**/dist
+
+# mac system file
+.DS_Store
