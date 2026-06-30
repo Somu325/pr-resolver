@@ -62,6 +62,65 @@ app.post('/resolve-comment', async (req, res) => {
     res.json({ suggestion: text })
 })
 
+
+app.get('/auth/github', (req, res) => {
+  const redirectUrl = `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&scope=repo`
+  res.redirect(redirectUrl)
+})
+
+// Step 2: GitHub redirects back here with a `code`
+app.get('/auth/callback', async (req, res) => {
+  const code = req.query.code
+
+  const tokenResponse = await axios.post(
+    'https://github.com/login/oauth/access_token',
+    {
+      client_id: process.env.GITHUB_CLIENT_ID,
+      client_secret: process.env.GITHUB_CLIENT_SECRET,
+      code
+    },
+    {
+      headers: { Accept: 'application/json' }
+    }
+  )
+
+  const accessToken = tokenResponse.data.access_token
+
+  // for now, redirect back to frontend with token in URL
+  // (we'll improve this to use cookies/sessions shortly)
+  res.redirect(`http://localhost:5173?token=${accessToken}`)
+})
+
+
+app.get('/repos', async (req, res) => {
+  const userToken = req.headers.authorization
+
+  const response = await axios.get('https://api.github.com/user/repos', {
+    headers: {
+      Authorization: userToken
+    }
+  })
+
+  res.json(response.data)
+})
+
+// list open PRs for a given repo
+app.get('/repos/:owner/:repo/pulls', async (req, res) => {
+  const userToken = req.headers.authorization
+  const { owner, repo } = req.params
+
+  const response = await axios.get(
+    `https://api.github.com/repos/${owner}/${repo}/pulls`,
+    {
+      headers: {
+        Authorization: userToken
+      }
+    }
+  )
+
+  res.json(response.data)
+})
+
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`)
 })
