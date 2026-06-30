@@ -5,6 +5,12 @@ function App() {
   const [comments, setComments] = useState([])
   const [suggestions, setSuggestions] = useState({})
   
+  // Dashboard Tabs & Pending Suggestions State
+  const [activeTab, setActiveTab] = useState('pending')
+  const [pendingSuggestions, setPendingSuggestions] = useState([])
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false)
+  const [watchedRepos, setWatchedRepos] = useState([])
+  
   // OAuth Token State
   const [token, setToken] = useState(null)
   
@@ -61,6 +67,29 @@ function App() {
     fetchRepos()
   }, [token])
 
+  const fetchWatchedRepos = async () => {
+    if (!token) return
+    try {
+      const response = await fetch('http://localhost:8000/repos/watched', {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      })
+      const data = await response.json()
+      setWatchedRepos(Array.isArray(data) ? data : [])
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
+  useEffect(() => {
+    if (token) {
+      fetchWatchedRepos()
+    } else {
+      setWatchedRepos([])
+    }
+  }, [token])
+
   // Fetch open PRs once selected repository changes
   useEffect(() => {
     if (!selectedRepo.owner || !selectedRepo.repo) {
@@ -106,6 +135,36 @@ function App() {
     setSelectedPR('')
   }
 
+  const handleWatchToggle = async () => {
+    const { owner, repo } = selectedRepo
+    if (!owner || !repo) return
+
+    const isWatched = watchedRepos.some(
+      (w) => w.owner.toLowerCase() === owner.toLowerCase() && w.repo.toLowerCase() === repo.toLowerCase()
+    )
+
+    const url = `http://localhost:8000/repos/${owner}/${repo}/watch`
+    const method = isWatched ? 'DELETE' : 'POST'
+
+    try {
+      const response = await fetch(url, {
+        method: method,
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      })
+      const data = await response.json()
+      if (data.error) {
+        alert(`Failed: ${data.error}`)
+        return
+      }
+      fetchWatchedRepos()
+    } catch (e) {
+      console.error(e)
+      alert('Error updating watch status')
+    }
+  }
+
   const handlePRChange = (e) => {
     setSelectedPR(e.target.value)
   }
@@ -128,27 +187,98 @@ function App() {
     }
   }
 
-  const resolveComment = async (comment) => {
-    setResolvingId(comment.id)
+  const fetchPendingSuggestions = async () => {
+    setLoadingSuggestions(true)
     try {
-      const response = await fetch('http://localhost:8000/resolve-comment', {
+      const response = await fetch('http://localhost:8000/suggestions?status=pending')
+      const data = await response.json()
+      setPendingSuggestions(Array.isArray(data) ? data : [])
+    } catch (e) {
+      console.error(e)
+      setPendingSuggestions([])
+    } finally {
+      setLoadingSuggestions(false)
+    }
+  }
+
+  const approveSuggestion = async (id) => {
+    try {
+      const response = await fetch(`http://localhost:8000/suggestions/${id}/approve`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      const data = await response.json()
+      if (data.error) {
+        alert(`Error: ${data.error}`)
+        return
+      }
+      alert('Fix applied and commit created successfully!')
+      fetchPendingSuggestions()
+    } catch (e) {
+      console.error(e)
+      alert('Failed to approve suggestion')
+    }
+  }
+
+  const rejectSuggestion = async (id) => {
+    try {
+      const response = await fetch(`http://localhost:8000/suggestions/${id}/reject`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      const data = await response.json()
+      if (data.error) {
+        alert(`Error: ${data.error}`)
+        return
+      }
+      fetchPendingSuggestions()
+    } catch (e) {
+      console.error(e)
+      alert('Failed to reject suggestion')
+    }
+  }
+
+  useEffect(() => {
+    fetchPendingSuggestions()
+  }, [])
+
+  const resolveComment = async (comment) => {
+    const { owner, repo } = selectedRepo
+    if (!owner || !repo) {
+      alert('Please select a repository first')
+      return
+    }
+    setResolvingId(comment.id)
+    try {
+      const response = await fetch('http://localhost:8000/debug/process-comment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          body: comment.body,
-          path: comment.path,
-          line: comment.line,
-          diff_hunk: comment.diff_hunk
+          commentId: comment.id,
+          owner,
+          repo
         })
       })
 
       const data = await response.json()
+      if (data.error) {
+        alert(`Error: ${data.error}`)
+        return
+      }
       setSuggestions((prev) => ({
         ...prev,
         [comment.id]: data.suggestion
       }))
+      fetchPendingSuggestions()
     } catch (e) {
       console.error(e)
     } finally {
@@ -233,224 +363,408 @@ function App() {
         </p>
       </header>
 
-      {/* Repo Selector Settings */}
-      <section className="settings-panel glass-panel">
-        {/* Repo Dropdown */}
-        <div className="input-group">
-          <label className="input-label">Select Repository</label>
-          <div style={{ position: 'relative', width: '100%' }}>
-            <select 
-              className="input-field"
-              value={selectedRepo.owner ? `${selectedRepo.owner}/${selectedRepo.repo}` : ''}
-              onChange={handleRepoChange}
-              disabled={!token || loadingRepos}
-            >
-              <option value="">
-                {loadingRepos ? 'Loading repositories...' : token ? '-- Choose a repository --' : 'Please connect GitHub first'}
-              </option>
-              {repos.map((r) => (
-                <option key={r.id} value={r.full_name}>
-                  {r.full_name}
-                </option>
-              ))}
-            </select>
-            {loadingRepos && (
-              <span className="select-spinner-wrapper">
-                <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+      {/* Dashboard Tabs */}
+      <div className="dashboard-tabs">
+        <button 
+          className={`tab-btn ${activeTab === 'pending' ? 'active' : ''}`}
+          onClick={() => { setActiveTab('pending'); fetchPendingSuggestions(); }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+            <line x1="9" y1="9" x2="15" y2="9" />
+            <line x1="9" y1="13" x2="15" y2="13" />
+            <line x1="9" y1="17" x2="13" y2="17" />
+          </svg>
+          Pending Review
+          {pendingSuggestions.length > 0 && (
+            <span className="count-badge" style={{ marginLeft: '6px', background: 'var(--accent-primary)', color: 'white', padding: '1px 6px', borderRadius: '10px', fontSize: '11px' }}>
+              {pendingSuggestions.length}
+            </span>
+          )}
+        </button>
+        <button 
+          className={`tab-btn ${activeTab === 'manual' ? 'active' : ''}`}
+          onClick={() => setActiveTab('manual')}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+          Manual PR Fetch
+        </button>
+      </div>
+
+      {activeTab === 'pending' ? (
+        <main className="comments-section">
+          <div className="feed-header">
+            <h2 className="feed-title">Pending Code Suggestions</h2>
+            <span className="count-badge">{pendingSuggestions.length}</span>
+          </div>
+
+          <div className="comments-feed">
+            {loadingSuggestions ? (
+              <div style={{ textAlign: 'center', padding: '48px' }}>
+                <svg className="animate-spin" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
                   <path d="M12 2a10 10 0 0 1 10 10" />
                 </svg>
-              </span>
+                <p style={{ marginTop: '12px', color: 'var(--text-secondary)' }}>Loading suggestions...</p>
+              </div>
+            ) : pendingSuggestions.length > 0 ? (
+              pendingSuggestions.map((sug) => (
+                <div key={sug._id} className="comment-card glass-panel">
+                  <div className="comment-card-header">
+                    <div className="suggestion-meta-row">
+                      <span className="repo-badge">{sug.owner}/{sug.repo}</span>
+                      <span className="pr-badge">PR #{sug.prNumber}</span>
+                      <div className="file-info" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                          <polyline points="14 2 14 8 20 8" />
+                        </svg>
+                        <span>{sug.filePath}</span>
+                      </div>
+                    </div>
+                    <span className={`confidence-badge ${sug.confidence || 'none'}`}>
+                      {sug.confidence || 'no'} confidence
+                    </span>
+                  </div>
+
+                  <div className="comment-card-body">
+                    {/* Reviewer Comment */}
+                    <div className="comment-bubble-wrapper" style={{ marginBottom: '16px' }}>
+                      <div className="reviewer-avatar">RC</div>
+                      <div className="comment-bubble">
+                        <div style={{ fontWeight: '600', fontSize: '13px', color: 'var(--text-primary)', marginBottom: '4px' }}>
+                          Reviewer Comment:
+                        </div>
+                        <p style={{ color: 'var(--text-primary)' }}>{sug.commentBody}</p>
+                      </div>
+                    </div>
+
+                    {/* Diff content */}
+                    {sug.suggestedCode ? (
+                      <div className="diff-container" style={{ marginBottom: '16px' }}>
+                        {sug.originalCode && sug.originalCode.split('\n').map((line, idx) => (
+                          <div key={`orig-${idx}`} className="diff-line deletion">
+                            - {line}
+                          </div>
+                        ))}
+                        {sug.suggestedCode.split('\n').map((line, idx) => (
+                          <div key={`sugg-${idx}`} className="diff-line addition">
+                            + {line}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ padding: '16px', background: 'rgba(220, 38, 38, 0.05)', border: '1px solid rgba(220, 38, 38, 0.1)', borderRadius: '8px', color: 'var(--error)', fontSize: '14px', marginBottom: '16px' }}>
+                        No code fix proposed. Gemini suggests manual resolution.
+                      </div>
+                    )}
+
+                    {/* Explanation */}
+                    <div style={{ padding: '14px', background: 'rgba(0, 0, 0, 0.02)', borderRadius: '8px', border: '1px solid var(--card-border)', fontSize: '14px', lineHeight: '1.5', color: 'var(--text-primary)', marginBottom: '16px' }}>
+                      <strong style={{ color: 'var(--text-secondary)' }}>AI Explanation:</strong> {sug.explanation}
+                    </div>
+
+                    {/* Actions */}
+                    <div className="suggestion-actions">
+                      <button 
+                        className="btn-approve"
+                        onClick={() => approveSuggestion(sug._id)}
+                        disabled={sug.confidence === 'none' || !token}
+                        title={!token ? 'Connect to GitHub to approve' : ''}
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                        Approve & Apply
+                      </button>
+                      <button 
+                        className="btn-reject"
+                        onClick={() => rejectSuggestion(sug._id)}
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="18" y1="6" x2="6" y2="18" />
+                          <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="empty-state glass-panel">
+                <div className="empty-icon-wrapper">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                  </svg>
+                </div>
+                <h3>All Caught Up!</h3>
+                <p>There are no suggestions pending review. Leave a comment on a PR to trigger the agent, or fetch comments manually.</p>
+              </div>
             )}
           </div>
-        </div>
-
-        {/* PR Dropdown (disabled/hidden until repo selected) */}
-        {selectedRepo.owner && selectedRepo.repo && (
-          <div className="input-group">
-            <label className="input-label">Select Pull Request</label>
-            <div style={{ position: 'relative', width: '100%' }}>
-              <select
-                className="input-field"
-                value={selectedPR}
-                onChange={handlePRChange}
-                disabled={loadingPRs}
-              >
-                <option value="">
-                  {loadingPRs ? 'Loading pull requests...' : '-- Choose a PR --'}
-                </option>
-                {pullRequests.map((pr) => (
-                  <option key={pr.id} value={pr.number}>
-                    #{pr.number} - {pr.title}
+        </main>
+      ) : (
+        <>
+          {/* Repo Selector Settings */}
+          <section className="settings-panel glass-panel">
+            {/* Repo Dropdown */}
+            <div className="input-group">
+              <label className="input-label">Select Repository</label>
+              <div style={{ position: 'relative', width: '100%' }}>
+                <select 
+                  className="input-field"
+                  value={selectedRepo.owner ? `${selectedRepo.owner}/${selectedRepo.repo}` : ''}
+                  onChange={handleRepoChange}
+                  disabled={!token || loadingRepos}
+                >
+                  <option value="">
+                    {loadingRepos ? 'Loading repositories...' : token ? '-- Choose a repository --' : 'Please connect GitHub first'}
                   </option>
-                ))}
-              </select>
-              {loadingPRs && (
-                <span className="select-spinner-wrapper">
+                  {repos.map((r) => (
+                    <option key={r.id} value={r.full_name}>
+                      {r.full_name}
+                    </option>
+                  ))}
+                </select>
+                {loadingRepos && (
+                  <span className="select-spinner-wrapper">
+                    <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
+                      <path d="M12 2a10 10 0 0 1 10 10" />
+                    </svg>
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* PR Dropdown */}
+            {selectedRepo.owner && selectedRepo.repo && (
+              <div className="input-group">
+                <label className="input-label">Select Pull Request</label>
+                <div style={{ position: 'relative', width: '100%' }}>
+                  <select
+                    className="input-field"
+                    value={selectedPR}
+                    onChange={handlePRChange}
+                    disabled={loadingPRs}
+                  >
+                    <option value="">
+                      {loadingPRs ? 'Loading pull requests...' : '-- Choose a PR --'}
+                    </option>
+                    {pullRequests.map((pr) => (
+                      <option key={pr.id} value={pr.number}>
+                        #{pr.number} - {pr.title}
+                      </option>
+                    ))}
+                  </select>
+                  {loadingPRs && (
+                    <span className="select-spinner-wrapper">
+                      <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
+                        <path d="M12 2a10 10 0 0 1 10 10" />
+                      </svg>
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {selectedRepo.owner && selectedRepo.repo && (
+              <button 
+                className="btn-fetch"
+                onClick={handleWatchToggle}
+                style={{ 
+                  background: watchedRepos.some(
+                    (w) => w.owner.toLowerCase() === selectedRepo.owner.toLowerCase() && w.repo.toLowerCase() === selectedRepo.repo.toLowerCase()
+                  ) ? 'rgba(220, 38, 38, 0.1)' : 'var(--accent-gradient)',
+                  color: watchedRepos.some(
+                    (w) => w.owner.toLowerCase() === selectedRepo.owner.toLowerCase() && w.repo.toLowerCase() === selectedRepo.repo.toLowerCase()
+                  ) ? 'var(--error)' : 'white',
+                  border: watchedRepos.some(
+                    (w) => w.owner.toLowerCase() === selectedRepo.owner.toLowerCase() && w.repo.toLowerCase() === selectedRepo.repo.toLowerCase()
+                  ) ? '1px solid rgba(220, 38, 38, 0.2)' : 'none'
+                }}
+              >
+                {watchedRepos.some(
+                  (w) => w.owner.toLowerCase() === selectedRepo.owner.toLowerCase() && w.repo.toLowerCase() === selectedRepo.repo.toLowerCase()
+                ) ? (
+                  <>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+                      <line x1="12" y1="2" x2="12" y2="12"></line>
+                    </svg>
+                    Unwatch Repo
+                  </>
+                ) : (
+                  <>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                      <circle cx="12" cy="12" r="3"></circle>
+                    </svg>
+                    Watch Repo
+                  </>
+                )}
+              </button>
+            )}
+
+            <button 
+              className="btn-fetch" 
+              onClick={fetchComments}
+              disabled={loadingComments || !selectedRepo.owner || !selectedRepo.repo || !selectedPR}
+            >
+              {loadingComments ? (
+                <>
                   <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
                     <path d="M12 2a10 10 0 0 1 10 10" />
                   </svg>
-                </span>
+                  Fetching...
+                </>
+              ) : (
+                <>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+                  </svg>
+                  Fetch Comments
+                </>
               )}
-            </div>
-          </div>
-        )}
+            </button>
+          </section>
 
-        <button 
-          className="btn-fetch" 
-          onClick={fetchComments}
-          disabled={loadingComments || !selectedRepo.owner || !selectedRepo.repo || !selectedPR}
-        >
-          {loadingComments ? (
-            <>
-              <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
-                <path d="M12 2a10 10 0 0 1 10 10" />
-              </svg>
-              Fetching...
-            </>
-          ) : (
-            <>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
-              </svg>
-              Fetch Comments
-            </>
-          )}
-        </button>
-      </section>
+          {/* Comments List Feed */}
+          <main className="comments-section">
+            {comments.length > 0 && (
+              <div className="feed-header">
+                <h2 className="feed-title">
+                  PR Review Comments
+                </h2>
+                <span className="count-badge">{comments.length}</span>
+              </div>
+            )}
 
-      {/* Comments List Feed */}
-      <main className="comments-section">
-        {comments.length > 0 && (
-          <div className="feed-header">
-            <h2 className="feed-title">
-              PR Review Comments
-            </h2>
-            <span className="count-badge">{comments.length}</span>
-          </div>
-        )}
-
-        <div className="comments-feed">
-          {comments.length > 0 ? (
-            comments.map((comment) => (
-              <div key={comment.id} className="comment-card glass-panel">
-                {/* Card Header: File info & line */}
-                <div className="comment-card-header">
-                  <div className="file-info">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--text-secondary)' }}>
-                      <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
-                      <polyline points="14 2 14 8 20 8" />
-                    </svg>
-                    <span>{comment.path}</span>
-                  </div>
-                  <span className="line-badge">Line {comment.line}</span>
-                </div>
-
-                <div className="comment-card-body">
-                  {/* Diff Hunk snippet */}
-                  {renderDiffLines(comment.diff_hunk)}
-
-                  {/* Reviewer Comment Bubble */}
-                  <div className="comment-bubble-wrapper">
-                    <div className="reviewer-avatar">
-                      {comment.user ? comment.user.login.slice(0, 2).toUpperCase() : 'DF'}
-                    </div>
-                    <div className="comment-bubble">
-                      <div style={{ fontWeight: '600', fontSize: '13px', color: 'var(--text-primary)', marginBottom: '4px' }}>
-                        @{comment.user ? comment.user.login : 'reviewer'}
+            <div className="comments-feed">
+              {comments.length > 0 ? (
+                comments.map((comment) => (
+                  <div key={comment.id} className="comment-card glass-panel">
+                    <div className="comment-card-header">
+                      <div className="file-info">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--text-secondary)' }}>
+                          <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                          <polyline points="14 2 14 8 20 8" />
+                        </svg>
+                        <span>{comment.path}</span>
                       </div>
-                      <p style={{ color: 'var(--text-primary)' }}>{comment.body}</p>
+                      <span className="line-badge">Line {comment.line || comment.original_line || 'unknown'}</span>
                     </div>
-                  </div>
 
-                  {/* Suggestion AI Actions */}
-                  <div className="action-row">
-                    <button 
-                      className={`btn-resolve ${resolvingId === comment.id ? 'glow-pulse' : ''}`}
-                      onClick={() => resolveComment(comment)}
-                      disabled={resolvingId !== null}
-                    >
-                      {resolvingId === comment.id ? (
-                        <>
-                          <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                            <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
-                            <path d="M12 2a10 10 0 0 1 10 10" />
-                          </svg>
-                          Resolving...
-                        </>
-                      ) : (
-                        <>
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" fill="currentColor" style={{ color: 'var(--accent-secondary)' }} />
-                          </svg>
-                          Resolve with AI
-                        </>
-                      )}
-                    </button>
-                  </div>
+                    <div className="comment-card-body">
+                      {renderDiffLines(comment.diff_hunk)}
 
-                  {/* AI Output suggestion bubble */}
-                  {suggestions[comment.id] && (
-                    <div className="ai-suggestion-box">
-                      <div className="suggestion-header">
-                        <span className="suggestion-title">
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-                            <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
-                            <line x1="12" y1="22.08" x2="12" y2="12" />
-                          </svg>
-                          AI Suggestion
-                        </span>
+                      <div className="comment-bubble-wrapper">
+                        <div className="reviewer-avatar">
+                          {comment.user ? comment.user.login.slice(0, 2).toUpperCase() : 'DF'}
+                        </div>
+                        <div className="comment-bubble">
+                          <div style={{ fontWeight: '600', fontSize: '13px', color: 'var(--text-primary)', marginBottom: '4px' }}>
+                            @{comment.user ? comment.user.login : 'reviewer'}
+                          </div>
+                          <p style={{ color: 'var(--text-primary)' }}>{comment.body}</p>
+                        </div>
+                      </div>
+
+                      <div className="action-row">
                         <button 
-                          className={`btn-copy ${copiedId === comment.id ? 'copied' : ''}`}
-                          onClick={() => copyToClipboard(comment.id, suggestions[comment.id])}
+                          className={`btn-resolve ${resolvingId === comment.id ? 'glow-pulse' : ''}`}
+                          onClick={() => resolveComment(comment)}
+                          disabled={resolvingId !== null}
                         >
-                          {copiedId === comment.id ? (
+                          {resolvingId === comment.id ? (
                             <>
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                                <polyline points="20 6 9 17 4 12" />
+                              <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
+                                <path d="M12 2a10 10 0 0 1 10 10" />
                               </svg>
-                              Copied!
+                              Resolving...
                             </>
                           ) : (
                             <>
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" fill="currentColor" style={{ color: 'var(--accent-secondary)' }} />
                               </svg>
-                              Copy Suggestion
+                              Resolve with AI
                             </>
                           )}
                         </button>
                       </div>
-                      <div className="suggestion-content">
-                        {suggestions[comment.id]}
-                      </div>
+
+                      {/* AI Output suggestion bubble */}
+                      {suggestions[comment.id] && (
+                        <div className="ai-suggestion-box">
+                          <div className="suggestion-header">
+                            <span className="suggestion-title">
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+                                <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+                                <line x1="12" y1="22.08" x2="12" y2="12" />
+                              </svg>
+                              AI Suggestion (Confidence: {suggestions[comment.id].confidence})
+                            </span>
+                            <button 
+                              className={`btn-copy ${copiedId === comment.id ? 'copied' : ''}`}
+                              onClick={() => copyToClipboard(comment.id, suggestions[comment.id].suggestedCode)}
+                              disabled={!suggestions[comment.id].suggestedCode}
+                            >
+                              {copiedId === comment.id ? (
+                                <>
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                    <polyline points="20 6 9 17 4 12" />
+                                  </svg>
+                                  Copied!
+                                </>
+                              ) : (
+                                <>
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                                  </svg>
+                                  Copy Suggestion
+                                </>
+                              )}
+                            </button>
+                          </div>
+                          <div className="suggestion-explanation" style={{ margin: '8px 0', fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
+                            <strong>Explanation:</strong> {suggestions[comment.id].explanation}
+                          </div>
+                          <div className="suggestion-content">
+                            {suggestions[comment.id].suggestedCode || 'No code fix proposed. (confidence: none)'}
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  )}
+                  </div>
+                ))
+              ) : (
+                <div className="empty-state glass-panel">
+                  <div className="empty-icon-wrapper">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <circle cx="12" cy="12" r="10" />
+                      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+                      <line x1="12" y1="17" x2="12.01" y2="17" />
+                    </svg>
+                  </div>
+                  <h3>No PR Comments Loaded</h3>
+                  <p>
+                    Enter the owner name, repository, and pull request number above to fetch active review comments.
+                  </p>
                 </div>
-              </div>
-            ))
-          ) : (
-            /* Empty State */
-            <div className="empty-state glass-panel">
-              <div className="empty-icon-wrapper">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <circle cx="12" cy="12" r="10" />
-                  <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
-                  <line x1="12" y1="17" x2="12.01" y2="17" />
-                </svg>
-              </div>
-              <h3>No PR Comments Loaded</h3>
-              <p>
-                Enter the owner name, repository, and pull request number above to fetch active review comments.
-              </p>
+              )}
             </div>
-          )}
-        </div>
-      </main>
+          </main>
+        </>
+      )}
     </div>
   )
 }
